@@ -10,11 +10,13 @@ log.info """\
         |indivfile    : ${params.indivs_file}
         |chromos      : ${params.chromos_file}
         |reference    : ${params.ref_file}
+        |bams_fn      : ${params.bams_fn}
         |bamsdir      : ${params.inputdir}
         |outputdir    : ${params.outputdir}
         |
         |Sex chromos  : ${params.sex_chromos}
         |
+        |Bam file needs indexing?       : ${params.index_bam_needed}
         |Obtain coverage stats?         : ${params.calc_coverage}
         |Call variants by individual?   : ${params.indiv_var_call}
         |Call variants by population?   : ${params.pops_var_call}
@@ -46,7 +48,15 @@ log.info """\
 
 indivs = file(params.indivs_file).readLines()
 indivs_ch = Channel.fromList(indivs)
+indivs_bam_ch = indivs_ch.map{ it ->
+                                    def indiv = it
+                                    def bam_fn = file("${params.inputdir}/${it}${params.bams_fn}")
+                                    
+                                    [indiv, bam_fn]
+
+                                    }
 chromos = file(params.chromos_file).readLines()
+chromos_ch = Channel.fromList(chromos)
 
 /*
  * Set data channels:
@@ -57,10 +67,34 @@ ref_ch = Channel.fromPath(params.ref_file)
 
 
 /*
-=======================================================================
-~ ~ ~ > *  Estimate coverage by individual and focal chromos  * < ~ ~ ~ 
-=======================================================================
+===============================
+~ ~ ~ > *  Processes  * < ~ ~ ~ 
+===============================
 */
+
+process index_bam  {
+
+/*
+ * If need be index each of the bam files before proceeding.
+ */
+
+    tag "Index bam file"
+
+    input:
+    tuple val(indiv), path(indiv_bam)
+
+    output:
+    tuple val(indiv), path(indiv_bam), path("${indiv_bam}.bai")
+
+
+    script:
+    """
+
+    samtools index -@ ${task.cpus} ${indiv_bam}
+
+    """
+}
+
 
 process cov_estimate {
 
@@ -73,15 +107,13 @@ process cov_estimate {
     tag "Estimate coverage"
 
     input:
-    val(indiv)
-    each chromo
+    tuple val(indiv), path(indiv_bam), path(indiv_bam_bai), val(chromo), path(reference)
 
     output:
-    tuple val(indiv), file("${chromo}.tsv")
+    tuple val(indiv), path("${chromo}.tsv")
 
 
     script:
-    def indiv_bam = file("${params.inputdir}/${indiv}.bam")
     def out_fn = "${chromo}.tsv"
     """
 
@@ -104,7 +136,7 @@ process cov_summary_INDIV {
     tuple val(indiv), path(chromo_cov_tsv_list)
 
     output:
-    file("${indiv}_coverage.tsv")
+    path("${indiv}_coverage.tsv")
 
 
     script:
@@ -160,16 +192,13 @@ process call_variants_CHROMO {
     label 'Endurance'
 
     input:
-    file(reference)
-    each individual
-    each chromo
+    tuple val(individual), path(indiv_bam), path(indiv_bam_bai), val(chromo), path(reference)
 
     output:
-    tuple val(individual), val(chromo), file("${chromo}_vars_filt.vcf.gz")
+    tuple val(individual), val(chromo), path("${chromo}_vars_filt.vcf.gz")
 
 
     script:
-    def indiv_bam = file("${params.inputdir}/${individual}.bam")
     """
 
     freebayes -f ${reference} --region ${chromo} -m 10 -p 2 ${indiv_bam}| \
@@ -192,10 +221,10 @@ process remove_indels {
     publishDir "${params.outputdir}/01.variants/${individual}", mode:'copy'
 
     input:
-    tuple val(individual), val(chromo), file(var_vcf)
+    tuple val(individual), val(chromo), path(var_vcf)
 
     output:
-    tuple val(individual), val(chromo), file("${chromo}_vars_filt_indels.vcf.gz")
+    tuple val(individual), val(chromo), path("${chromo}_vars_filt_indels.vcf.gz")
 
 
     script:
@@ -220,10 +249,10 @@ process mask_hets {
     publishDir "${params.outputdir}/01.variants/${individual}", mode:'copy'
 
     input:
-    tuple val(individual), val(chromo), file(var_vcf)
+    tuple val(individual), val(chromo), path(var_vcf)
 
     output:
-    tuple val(individual), val(chromo), file("${chromo}_hets.tsv")
+    tuple val(individual), val(chromo), path("${chromo}_hets.tsv")
 
 
     script:
@@ -248,15 +277,13 @@ process mask_cov {
     publishDir "${params.outputdir}/01.variants/${individual}", mode:'copy'
 
     input:
-    val(individual)
-    each chromo
+    tuple val(individual), path(indiv_bam), path(indiv_bam_bai), val(chromo), file(reference)
 
     output:
-    tuple val(individual), val(chromo), file("${chromo}_cov.tsv")
+    tuple val(individual), val(chromo), path("${chromo}_cov.tsv")
 
 
     script:
-    def indiv_bam = file("${params.inputdir}/${individual}.bam")
     """
 
     samtools depth -aa -Q 10 -r ${chromo} ${indiv_bam} | \
@@ -277,10 +304,10 @@ process mask_merge {
     publishDir "${params.outputdir}/01.variants/${individual}", mode:'copy'
 
     input:
-    tuple val(individual), val(chromo), file(het_bed), file(cov_bed)
+    tuple val(individual), val(chromo), path(het_bed), path(cov_bed)
 
     output:
-    tuple val(individual), val(chromo), file("${chromo}_cov_hets.tsv")
+    tuple val(individual), val(chromo), path("${chromo}_cov_hets.tsv")
 
 
     script:
@@ -313,10 +340,10 @@ process call_consensus {
     publishDir "${params.outputdir}/02.consensus/${individual}", mode:'copy'
 
     input:
-    tuple val(individual), val(chromo), file(vcf_fn)
+    tuple val(individual), val(chromo), path(vcf_fn)
 
     output:
-    tuple val(individual), val(chromo), file("${individual}_${chromo}_cons.fa")
+    tuple val(individual), val(chromo), path("${individual}_${chromo}_cons.fa")
 
 
     script:
@@ -342,10 +369,10 @@ process call_consensus_MASK {
     publishDir "${params.outputdir}/02.consensus/${individual}", mode:'copy'
 
     input:
-    tuple val(individual), val(chromo), file(vcf_fn), file(mask_fn)
+    tuple val(individual), val(chromo), path(vcf_fn), path(mask_fn)
 
     output:
-    tuple val(individual), val(chromo), file("${individual}_${chromo}_cons.fa")
+    tuple val(individual), val(chromo), path("${individual}_${chromo}_cons.fa")
 
 
     script:
@@ -426,9 +453,26 @@ process calc_missing_data_SUMMARY {
 */
 
 workflow {
+    // If need be index the bam file and create a standard channel for downstream workflow:
+    // - indiv, bam, bai, chromo, reference (the .bai was added because otherwise it wouldn't be copied to the work folder)
+    if (params.index_bam_needed) {
+        indivs_bam_indexed_ch = index_bam(indivs_bam_ch)
+        indivs_bam_chromo_ref_ch = indivs_bam_indexed_ch.combine(chromos_ch).combine(ref_ch)
+    } else {
+        indivs_bam_indexed_ch = indivs_bam_ch.map{ it ->
+                                    def indiv = it[0]
+                                    def bam_fn = it[1]
+                                    def bai_fn = file("${params.inputdir}/${bam_fn}.bai")
+                                    
+                                    [indiv, bam_fn, bai_fn]
+
+                                    }
+        indivs_bam_chromo_ref_ch = indivs_bam_indexed_ch.combine(chromos_ch).combine(ref_ch)
+    }
+
     // Estimate and visualise coverage stats
     if (params.calc_coverage) {
-        cov_estimate(indivs_ch, chromos)
+        cov_estimate(indivs_bam_chromo_ref_ch)
         cov_estimate.out.groupTuple() | cov_summary_INDIV
         cov_summary_INDIV.out.collect() | cov_summary_ALL
     } else {
@@ -436,22 +480,22 @@ workflow {
 
     // Call variants and filter (with or without indels)
     if (params.indiv_var_call == true && params.filt_indels == true) {
-        vars_filt_fn_ch = call_variants_CHROMO(ref_ch, indivs, chromos) | remove_indels
+        vars_filt_fn_ch = call_variants_CHROMO(indivs_bam_chromo_ref_ch) | remove_indels
            // This 'else if' rather than 'else' statement is included in case you only want to estimate the coverage
     } else if (params.indiv_var_call == true && params.filt_indels == false) {
-        vars_filt_fn_ch = call_variants_CHROMO(ref_ch, indivs, chromos)
+        vars_filt_fn_ch = call_variants_CHROMO(indivs_bam_chromo_ref_ch)
     }
 
     // Create mask files (optional, but highly recommended). This can only be run in combination with variant calling
-    if (params.mask_hets == true && params.mask_cov == true) {
+    if (params.indiv_var_call == true && params.mask_hets == true && params.mask_cov == true) {
         mask_het_fn_ch = vars_filt_fn_ch | mask_hets
-        mask_cov_fn_ch = mask_cov(indivs_ch, chromos)
+        mask_cov_fn_ch = mask_cov(indivs_bam_chromo_ref_ch)
         mask_combined_ch = mask_het_fn_ch.combine(mask_cov_fn_ch, by: [0,1])
         mask_fn_ch = mask_merge(mask_combined_ch)
-    } else if (params.mask_hets == true && params.mask_cov == false) {
+    } else if (params.indiv_var_call == true && params.mask_hets == true && params.mask_cov == false) {
         mask_fn_ch = vars_filt_fn_ch | mask_hets
-    } else if (params.mask_hets == false && params.mask_cov == true) {
-        mask_fn_ch = mask_cov(indivs_ch, chromos)
+    } else if (params.indiv_var_call == true && params.mask_hets == false && params.mask_cov == true) {
+        mask_fn_ch = mask_cov(indivs_bam_chromo_ref_ch)
     }
 
     // Call consensus (optional, this can only be run in combination with indiv variant calling)

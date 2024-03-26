@@ -59,8 +59,9 @@ sex_chr_list_updated = []
 
 for chromo in sex_chr_list:
 	x = chromo.replace('[', '')
-	y = x.replace(',', '')
-	sex_chr_list_updated.append(y)
+	y = x.replace(']', '')
+	z = y.replace(',', '')
+	sex_chr_list_updated.append(z)
 
 def find_chromo_type(chromo):
 	if chromo in sex_chr_list_updated:
