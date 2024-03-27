@@ -462,7 +462,7 @@ workflow {
         indivs_bam_indexed_ch = indivs_bam_ch.map{ it ->
                                     def indiv = it[0]
                                     def bam_fn = it[1]
-                                    def bai_fn = file("${params.inputdir}/${bam_fn}.bai")
+                                    def bai_fn = file("${bam_fn}.bai")
                                     
                                     [indiv, bam_fn, bai_fn]
 
